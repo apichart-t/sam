@@ -4,13 +4,13 @@ import { Project, Unit } from './types';
 export const DEFAULT_ADMIN_PASSWORD = "admin";
 
 export const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyB672oHekE8neskCTawJoJK-MTUgA5HpMA",
-  authDomain: "v-1-j1-tracking.firebaseapp.com",
-  projectId: "v-1-j1-tracking",
-  storageBucket: "v-1-j1-tracking.firebasestorage.app",
-  messagingSenderId: "624393995850",
-  appId: "1:624393995850:web:162975d13598bc4eb508b3",
-  measurementId: "G-KXKVMYR9YX"
+   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 export const DEFAULT_UNITS: Unit[] = [
