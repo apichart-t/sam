@@ -1,280 +1,314 @@
 import { Report, Project, Unit, ProjectGroup } from '../types';
-import { DEFAULT_PROJECTS, DEFAULT_UNITS } from '../constants';
+import { DEFAULT_PROJECTS, DEFAULT_UNITS, FIREBASE_CONFIG } from '../constants';
+// FIX: Use namespace import for firebase/app to avoid "no exported member" error in some environments
+import * as firebaseApp from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  getDocs, 
+  setDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  where, 
+  deleteDoc,
+  updateDoc,
+  limit,
+  writeBatch,
+  deleteField
+} from 'firebase/firestore';
 
-const KEYS = {
-    REPORTS: 'j1_reports',
-    PROJECTS: 'j1_projects',
-    UNITS: 'j1_units',
-    GROUPS: 'j1_groups'
+// Initialize Firebase
+const app = firebaseApp.initializeApp(FIREBASE_CONFIG);
+const db = getFirestore(app);
+
+const COLLECTIONS = {
+    REPORTS: 'reports',
+    PROJECTS: 'projects',
+    UNITS: 'units',
+    GROUPS: 'groups'
 };
 
-// Simple event system for "real-time" updates
-const listeners: { [key: string]: Function[] } = {
-    reports: [],
-    projects: [],
-    units: [],
-    groups: []
-};
-
-const notify = (key: string, data: any[]) => {
-    if (listeners[key]) {
-        listeners[key].forEach(cb => cb(data));
-    }
-};
-
-const load = <T>(key: string): T[] => {
-    try {
-        const str = localStorage.getItem(key);
-        return str ? JSON.parse(str) : [];
-    } catch (e) {
-        console.error("Error loading from localStorage", e);
-        return [];
-    }
-};
-
-const save = (key: string, data: any[]) => {
-    try {
-        localStorage.setItem(key, JSON.stringify(data));
-        notify(key === KEYS.REPORTS ? 'reports' : 
-               key === KEYS.PROJECTS ? 'projects' : 
-               key === KEYS.UNITS ? 'units' : 'groups', data);
-    } catch (e) {
-        console.error("Error saving to localStorage", e);
-    }
-};
-
-// --- SUBSCRIPTIONS ---
+// --- SUBSCRIPTIONS (Real-time) ---
 
 export const subscribeToReports = (callback: (reports: Report[]) => void) => {
-    listeners['reports'].push(callback);
-    callback(load<Report>(KEYS.REPORTS));
-    return () => {
-        listeners['reports'] = listeners['reports'].filter(cb => cb !== callback);
-    };
+    const q = query(collection(db, COLLECTIONS.REPORTS));
+    return onSnapshot(q, (snapshot) => {
+        const reports = snapshot.docs.map(doc => doc.data() as Report);
+        callback(reports);
+    }, (error) => {
+        console.error("Error subscribing to reports:", error);
+    });
 };
 
 export const subscribeToProjects = (callback: (projects: Project[]) => void) => {
-    listeners['projects'].push(callback);
-    callback(load<Project>(KEYS.PROJECTS));
-    return () => {
-        listeners['projects'] = listeners['projects'].filter(cb => cb !== callback);
-    };
+    const q = query(collection(db, COLLECTIONS.PROJECTS));
+    return onSnapshot(q, (snapshot) => {
+        const projects = snapshot.docs.map(doc => doc.data() as Project);
+        callback(projects);
+    }, (error) => {
+        console.error("Error subscribing to projects:", error);
+    });
 };
 
 export const subscribeToUnits = (callback: (units: Unit[]) => void) => {
-    listeners['units'].push(callback);
-    const units = load<Unit>(KEYS.UNITS);
-    // Default migration for old data
-    const safeUnits = units.map(u => ({ ...u, password: u.password || '123' }));
-    callback(safeUnits);
-    return () => {
-        listeners['units'] = listeners['units'].filter(cb => cb !== callback);
-    };
+    const q = query(collection(db, COLLECTIONS.UNITS));
+    return onSnapshot(q, (snapshot) => {
+        const units = snapshot.docs.map(doc => {
+            const data = doc.data() as Unit;
+            // Migration for old data
+            if (!data.password) data.password = '123'; 
+            return data;
+        });
+        callback(units);
+    }, (error) => {
+        console.error("Error subscribing to units:", error);
+    });
 };
 
 export const subscribeToGroups = (callback: (groups: ProjectGroup[]) => void) => {
-    listeners['groups'].push(callback);
-    callback(load<ProjectGroup>(KEYS.GROUPS));
-    return () => {
-        listeners['groups'] = listeners['groups'].filter(cb => cb !== callback);
-    };
+    const q = query(collection(db, COLLECTIONS.GROUPS));
+    return onSnapshot(q, (snapshot) => {
+        const groups = snapshot.docs.map(doc => doc.data() as ProjectGroup);
+        callback(groups);
+    }, (error) => {
+        console.error("Error subscribing to groups:", error);
+    });
 };
 
-// --- CRUD ---
+// --- CRUD Operations ---
 
 export const saveReport = async (report: Report): Promise<void> => {
-    const reports = load<Report>(KEYS.REPORTS);
-    const index = reports.findIndex(r => r.id === report.id);
-    if (index >= 0) {
-        reports[index] = report;
-    } else {
-        reports.push(report);
+    try {
+        await setDoc(doc(db, COLLECTIONS.REPORTS, report.id), report);
+    } catch (e) {
+        console.error("Error saving report:", e);
+        throw e;
     }
-    save(KEYS.REPORTS, reports);
 };
 
 export const deleteReport = async (id: string): Promise<void> => {
-    let reports = load<Report>(KEYS.REPORTS);
-    reports = reports.filter(r => r.id !== id);
-    save(KEYS.REPORTS, reports);
-};
-
-export const getReports = async (): Promise<Report[]> => {
-    return load<Report>(KEYS.REPORTS);
-};
-
-export const initializeProjects = async () => {
-    const projects = load<Project>(KEYS.PROJECTS);
-    if (projects.length === 0) {
-        console.log("Seeding default projects to LocalStorage...");
-        save(KEYS.PROJECTS, DEFAULT_PROJECTS);
-    }
-    
-    const units = load<Unit>(KEYS.UNITS);
-    if (units.length === 0) {
-        console.log("Seeding default units to LocalStorage...");
-        save(KEYS.UNITS, DEFAULT_UNITS);
+    try {
+        await deleteDoc(doc(db, COLLECTIONS.REPORTS, id));
+    } catch (e) {
+        console.error("Error deleting report:", e);
+        throw e;
     }
 };
 
 export const saveProject = async (project: Project, oldProject?: Project): Promise<void> => {
-    const projects = load<Project>(KEYS.PROJECTS);
-    const index = projects.findIndex(p => p.id === project.id);
-    if (index >= 0) {
-        projects[index] = project;
-    } else {
-        projects.push(project);
-    }
-    save(KEYS.PROJECTS, projects);
+    try {
+        await setDoc(doc(db, COLLECTIONS.PROJECTS, project.id), project);
 
-    // Sync details
-    if (oldProject) {
-        const nameChanged = oldProject.name !== project.name;
-        const unitChanged = oldProject.unitId !== project.unitId;
-        if (nameChanged || unitChanged) {
-             const reports = load<Report>(KEYS.REPORTS);
-             let changed = false;
-             reports.forEach(r => {
-                 if (r.projectId === project.id) {
-                     r.projectName = project.name;
-                     r.unitId = project.unitId;
-                     changed = true;
-                 }
-             });
-             if (changed) save(KEYS.REPORTS, reports);
+        // Sync Project Name/Unit to Reports if changed
+        if (oldProject) {
+            const nameChanged = oldProject.name !== project.name;
+            const unitChanged = oldProject.unitId !== project.unitId;
+            
+            if (nameChanged || unitChanged) {
+                // Find related reports
+                const q = query(collection(db, COLLECTIONS.REPORTS), where("projectId", "==", project.id));
+                const snapshot = await getDocs(q);
+                
+                const batch = writeBatch(db);
+                snapshot.docs.forEach(d => {
+                    batch.update(d.ref, {
+                        projectName: project.name,
+                        unitId: project.unitId
+                    });
+                });
+                await batch.commit();
+            }
         }
+    } catch (e) {
+        console.error("Error saving project:", e);
+        throw e;
     }
 };
 
 export const softDeleteProject = async (id: string): Promise<void> => {
-    const projects = load<Project>(KEYS.PROJECTS);
-    const p = projects.find(p => p.id === id);
-    if (p) {
-        p.deletedAt = Date.now();
-        save(KEYS.PROJECTS, projects);
+    try {
+        await updateDoc(doc(db, COLLECTIONS.PROJECTS, id), {
+            deletedAt: Date.now()
+        });
+    } catch (e) {
+        console.error("Error soft deleting project:", e);
+        throw e;
     }
 };
 
 export const restoreProject = async (id: string): Promise<void> => {
-    const projects = load<Project>(KEYS.PROJECTS);
-    const p = projects.find(p => p.id === id);
-    if (p) {
-        delete p.deletedAt;
-        save(KEYS.PROJECTS, projects);
+    try {
+        await updateDoc(doc(db, COLLECTIONS.PROJECTS, id), {
+            deletedAt: deleteField()
+        });
+    } catch (e) {
+        console.error("Error restoring project:", e);
+        throw e;
     }
 };
 
 export const deleteProject = async (id: string): Promise<void> => {
-    let projects = load<Project>(KEYS.PROJECTS);
-    projects = projects.filter(p => p.id !== id);
-    save(KEYS.PROJECTS, projects);
-
-    let reports = load<Report>(KEYS.REPORTS);
-    const initialLen = reports.length;
-    reports = reports.filter(r => r.projectId !== id);
-    if (reports.length !== initialLen) {
-        save(KEYS.REPORTS, reports);
+    try {
+        await deleteDoc(doc(db, COLLECTIONS.PROJECTS, id));
+        
+        // Delete related reports
+        const q = query(collection(db, COLLECTIONS.REPORTS), where("projectId", "==", id));
+        const snapshot = await getDocs(q);
+        const batch = writeBatch(db);
+        snapshot.docs.forEach(d => {
+            batch.delete(d.ref);
+        });
+        await batch.commit();
+    } catch (e) {
+        console.error("Error deleting project:", e);
+        throw e;
     }
 };
 
-export const getProjects = async (): Promise<Project[]> => {
-    return load<Project>(KEYS.PROJECTS);
+export const saveUnit = async (unit: Unit): Promise<void> => {
+    await setDoc(doc(db, COLLECTIONS.UNITS, unit.id), unit);
+};
+
+export const deleteUnit = async (id: string): Promise<void> => {
+    await deleteDoc(doc(db, COLLECTIONS.UNITS, id));
+    
+    // Cascade delete projects and reports would be heavy.
+    // Ideally use Cloud Functions. For client-side, we might skip or do batch if small.
+    // Let's do client side batch for consistency.
+    
+    const batch = writeBatch(db);
+    
+    // Projects
+    const qP = query(collection(db, COLLECTIONS.PROJECTS), where("unitId", "==", id));
+    const snapP = await getDocs(qP);
+    snapP.docs.forEach(d => batch.delete(d.ref));
+    
+    // Reports
+    const qR = query(collection(db, COLLECTIONS.REPORTS), where("unitId", "==", id));
+    const snapR = await getDocs(qR);
+    snapR.docs.forEach(d => batch.delete(d.ref));
+    
+    await batch.commit();
+};
+
+export const saveProjectGroup = async (group: ProjectGroup): Promise<void> => {
+    await setDoc(doc(db, COLLECTIONS.GROUPS, group.id), group);
+};
+
+export const deleteProjectGroup = async (id: string): Promise<void> => {
+    await deleteDoc(doc(db, COLLECTIONS.GROUPS, id));
+    
+    // Ungroup projects
+    const q = query(collection(db, COLLECTIONS.PROJECTS), where("groupId", "==", id));
+    const snapshot = await getDocs(q);
+    const batch = writeBatch(db);
+    snapshot.docs.forEach(d => {
+        batch.update(d.ref, { groupId: deleteField() }); 
+    });
+    await batch.commit();
+};
+
+
+// --- Initialization ---
+
+export const initializeProjects = async () => {
+    try {
+        const q = query(collection(db, COLLECTIONS.PROJECTS), limit(1));
+        const snapshot = await getDocs(q);
+        
+        if (snapshot.empty) {
+            console.log("Seeding default data to Firestore...");
+            const batch = writeBatch(db);
+            
+            DEFAULT_UNITS.forEach(u => {
+                const ref = doc(db, COLLECTIONS.UNITS, u.id);
+                batch.set(ref, u);
+            });
+            
+            DEFAULT_PROJECTS.forEach(p => {
+                const ref = doc(db, COLLECTIONS.PROJECTS, p.id);
+                batch.set(ref, p);
+            });
+            
+            await batch.commit();
+            console.log("Seeding complete.");
+        }
+    } catch (e) {
+        console.error("Initialization error:", e);
+    }
 };
 
 export const cleanupTrash = async (): Promise<void> => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const cutoff = Date.now() - THIRTY_DAYS_MS;
     
-    let projects = load<Project>(KEYS.PROJECTS);
-    const toDelete = projects.filter(p => p.deletedAt && p.deletedAt < cutoff);
-    
-    if (toDelete.length > 0) {
-        projects = projects.filter(p => !p.deletedAt || p.deletedAt >= cutoff);
-        save(KEYS.PROJECTS, projects);
-        
-        let reports = load<Report>(KEYS.REPORTS);
-        const toDeleteIds = new Set(toDelete.map(p => p.id));
-        reports = reports.filter(r => !toDeleteIds.has(r.projectId));
-        save(KEYS.REPORTS, reports);
-        
-        console.log(`Cleaned up ${toDelete.length} expired projects.`);
+    // Client-side filtering approach to avoid index issues for now:
+    try {
+         const qAll = query(collection(db, COLLECTIONS.PROJECTS)); 
+         const snap = await getDocs(qAll);
+         const batch = writeBatch(db);
+         let count = 0;
+         
+         snap.docs.forEach(d => {
+             const data = d.data() as Project;
+             if (data.deletedAt && data.deletedAt < cutoff) {
+                 batch.delete(d.ref);
+                 count++;
+             }
+         });
+         
+         if (count > 0) {
+             await batch.commit();
+             console.log(`Cleaned up ${count} expired projects.`);
+         }
+    } catch (e) {
+        console.error("Cleanup error:", e);
     }
 };
 
-export const saveProjectGroup = async (group: ProjectGroup): Promise<void> => {
-    const groups = load<ProjectGroup>(KEYS.GROUPS);
-    const index = groups.findIndex(g => g.id === group.id);
-    if (index >= 0) {
-        groups[index] = group;
-    } else {
-        groups.push(group);
-    }
-    save(KEYS.GROUPS, groups);
-};
-
-export const deleteProjectGroup = async (id: string): Promise<void> => {
-    let groups = load<ProjectGroup>(KEYS.GROUPS);
-    groups = groups.filter(g => g.id !== id);
-    save(KEYS.GROUPS, groups);
-    
-    // Update projects
-    const projects = load<Project>(KEYS.PROJECTS);
-    let changed = false;
-    projects.forEach(p => {
-        if (p.groupId === id) {
-            delete p.groupId;
-            changed = true;
-        }
-    });
-    if (changed) save(KEYS.PROJECTS, projects);
-};
-
-export const saveUnit = async (unit: Unit): Promise<void> => {
-    const units = load<Unit>(KEYS.UNITS);
-    const index = units.findIndex(u => u.id === unit.id);
-    if (index >= 0) {
-        units[index] = unit;
-    } else {
-        units.push(unit);
-    }
-    save(KEYS.UNITS, units);
-};
-
-export const deleteUnit = async (id: string): Promise<void> => {
-    let units = load<Unit>(KEYS.UNITS);
-    units = units.filter(u => u.id !== id);
-    save(KEYS.UNITS, units);
-
-    // Cascade Projects
-    let projects = load<Project>(KEYS.PROJECTS);
-    projects = projects.filter(p => p.unitId !== id);
-    save(KEYS.PROJECTS, projects);
-
-    // Cascade Reports
-    let reports = load<Report>(KEYS.REPORTS);
-    reports = reports.filter(r => r.unitId !== id);
-    save(KEYS.REPORTS, reports);
-};
-
-export const getUnits = async (): Promise<Unit[]> => {
-    return load<Unit>(KEYS.UNITS);
-};
+// --- Helpers ---
 
 export const getAvailableYearsFromList = (projects: Project[]): string[] => {
-    const activeProjects = projects.filter(p => !p.deletedAt);
+    const activeProjects = projects.filter(p => !p.deletedAt); // Treat 0 or undefined as active
     const years = Array.from(new Set(activeProjects.map(p => p.fiscalYear || "2569"))).sort((a, b) => b.localeCompare(a));
     if(years.length === 0) return ["2569"];
     return years;
-}
+};
+
+// --- Getters for One-time fetch (Diagnostics/Export) ---
+
+export const getProjects = async (): Promise<Project[]> => {
+    const snap = await getDocs(collection(db, COLLECTIONS.PROJECTS));
+    return snap.docs.map(d => d.data() as Project);
+};
+
+export const getReports = async (): Promise<Report[]> => {
+    const snap = await getDocs(collection(db, COLLECTIONS.REPORTS));
+    return snap.docs.map(d => d.data() as Report);
+};
+
+export const getUnits = async (): Promise<Unit[]> => {
+    const snap = await getDocs(collection(db, COLLECTIONS.UNITS));
+    return snap.docs.map(d => d.data() as Unit);
+};
+
+// --- Backup ---
 
 export const exportBackupData = async () => {
+    const reports = await getReports();
+    const projects = await getProjects();
+    const units = await getUnits();
+    const gSnap = await getDocs(collection(db, COLLECTIONS.GROUPS));
+    const groups = gSnap.docs.map(d => d.data() as ProjectGroup);
+
     const data = {
-        reports: load(KEYS.REPORTS),
-        projects: load(KEYS.PROJECTS),
-        units: load(KEYS.UNITS),
-        groups: load(KEYS.GROUPS),
+        reports,
+        projects,
+        units,
+        groups,
         timestamp: Date.now(),
-        version: '2.0 (Local)'
+        version: '2.0 (Cloud)'
     };
     return JSON.stringify(data, null, 2);
 };
@@ -283,15 +317,24 @@ export const importBackupData = async (jsonString: string): Promise<boolean> => 
     try {
         const data = JSON.parse(jsonString);
         if (!data.reports || !data.projects || !data.units) throw new Error("Invalid format");
-
-        save(KEYS.REPORTS, data.reports);
-        save(KEYS.PROJECTS, data.projects);
-        save(KEYS.UNITS, data.units);
-        if(data.groups) save(KEYS.GROUPS, data.groups);
+        
+        // Units
+        for (const u of data.units) await setDoc(doc(db, COLLECTIONS.UNITS, u.id), u);
+        
+        // Projects
+        for (const p of data.projects) await setDoc(doc(db, COLLECTIONS.PROJECTS, p.id), p);
+        
+        // Reports
+        for (const r of data.reports) await setDoc(doc(db, COLLECTIONS.REPORTS, r.id), r);
+        
+        // Groups
+        if (data.groups) {
+             for (const g of data.groups) await setDoc(doc(db, COLLECTIONS.GROUPS, g.id), g);
+        }
 
         return true;
     } catch (e) {
-        console.error(e);
+        console.error("Import error:", e);
         return false;
     }
 };
